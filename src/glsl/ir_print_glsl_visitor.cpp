@@ -73,11 +73,13 @@ struct global_print_tracker {
 		var_counter = 0;
 		var_hash = hash_table_ctor(0, hash_table_pointer_hash, hash_table_pointer_compare);
 		main_function_done = false;
+		ubo_tracker = hash_table_ctor(0, hash_table_pointer_hash, hash_table_pointer_compare);
 	}
 	
 	~global_print_tracker() {
 		hash_table_dtor (var_hash);
 		ralloc_free(mem_ctx);
+		hash_table_dtor (ubo_tracker);
 	}
 	
 	unsigned	var_counter;
@@ -85,6 +87,7 @@ struct global_print_tracker {
 	exec_list	global_assignements;
 	void* mem_ctx;
 	bool	main_function_done;
+	hash_table*	ubo_tracker;
 };
 
 class ir_print_glsl_visitor : public ir_visitor {
@@ -491,25 +494,72 @@ void ir_print_glsl_visitor::visit(ir_variable *ir)
 		print_var_name (ir);
 		return;
 	}
-	
-	buffer.asprintf_append ("%s%s%s%s",
-							cent, inv, interp[ir->data.interpolation], mode[decormode][ir->data.mode]);
-	print_precision (ir, ir->type);
-	print_type(buffer, ir->type, false);
-	buffer.asprintf_append (" ");
-	print_var_name (ir);
-	print_type_post(buffer, ir->type, false);
-	
-	if (ir->constant_value &&
-		ir->data.mode != ir_var_shader_in &&
-		ir->data.mode != ir_var_shader_out &&
-		ir->data.mode != ir_var_shader_inout &&
-		ir->data.mode != ir_var_function_in &&
-		ir->data.mode != ir_var_function_out &&
-		ir->data.mode != ir_var_function_inout)
+
+	if (const glsl_type* it = ir->get_interface_type())
 	{
-		buffer.asprintf_append (" = ");
-		visit (ir->constant_value);
+		long ubo_id = (long)hash_table_find (globals->ubo_tracker, it);
+		
+		if (ubo_id == 0)
+			hash_table_insert (globals->ubo_tracker, (void*)it, it);
+		else
+		{
+			skipped_this_ir = true;
+			return;
+		}
+
+		buffer.asprintf_append("layout (std140) ");
+
+		buffer.asprintf_append ("%s%s%s%s",
+						cent, inv, interp[ir->data.interpolation], mode[decormode][ir->data.mode]);
+
+		print_precision (ir, it);
+		print_type(buffer, it, false);
+		
+		buffer.asprintf_append("\n{\n");
+
+		for (auto pid = 0u; pid < it->length; ++pid)
+		{
+			const auto &structField = it->fields.structure[pid];
+			
+			buffer.asprintf_append("\t");
+			print_precision(ir, structField.type);
+			print_type(buffer, structField.type, false);
+			buffer.asprintf_append(" ");
+			buffer.asprintf_append(structField.name);
+
+			if (structField.type->base_type == GLSL_TYPE_ARRAY)
+			{
+				buffer.asprintf_append("[%u]", structField.type->length);
+			}
+
+			buffer.asprintf_append(";\n");
+		}
+
+		buffer.asprintf_append("\n}");
+	}
+	else
+	{
+		buffer.asprintf_append ("%s%s%s%s",
+						cent, inv, interp[ir->data.interpolation], mode[decormode][ir->data.mode]);
+
+		print_precision (ir, ir->type);
+		print_type(buffer, ir->type, false);
+
+		buffer.asprintf_append (" ");
+		print_var_name (ir);
+		print_type_post(buffer, ir->type, false);
+		
+		if (ir->constant_value &&
+			ir->data.mode != ir_var_shader_in &&
+			ir->data.mode != ir_var_shader_out &&
+			ir->data.mode != ir_var_shader_inout &&
+			ir->data.mode != ir_var_function_in &&
+			ir->data.mode != ir_var_function_out &&
+			ir->data.mode != ir_var_function_inout)
+		{
+			buffer.asprintf_append (" = ");
+			visit (ir->constant_value);
+		}
 	}
 }
 
